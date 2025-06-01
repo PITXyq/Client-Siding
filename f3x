@@ -1,4 +1,4 @@
--- [Infinite Yield Script - Modified for Conceptual F3X Peer Sync & Auto-Activation]
+-- [Infinite Yield Script - Modified for F3X Launcher Tool & Conceptual Peer Sync]
 
 -- Start of IY_LOADED and utility functions
 if IY_LOADED and not _G.IY_DEBUG == true then
@@ -85,313 +85,221 @@ isLegacyChat = TextChatService.ChatVersion == Enum.ChatVersion.LegacyChatService
 --[[
     F3X PEER SYNCHRONIZATION FRAMEWORK (CONCEPTUAL - REQUIRES EXTERNAL SETUP)
 
-    The following functions and logic are designed to enable F3X edits to be
-    seen by other users who are ALSO running this exact same modified script.
-    However, this feature WILL NOT WORK OUT OF THE BOX. It has two critical
-    external requirements that YOU, the user/group, must fulfill:
-
-    1. EXTERNAL HTTP RELAY SERVER:
-       - You need to set up, host, and manage your own web server.
-       - This server will receive F3X edit data from one client and relay it to others.
-       - The script is configured with a placeholder URL in `_G.F3X_PEER_SERVER_URL`.
-         YOU MUST CHANGE THIS to your server's actual URL.
-       - Your server needs to handle POST requests (to receive edits) and GET requests
-         (for clients to poll for new edits, ideally filtering by `since` and `exclude_id` parameters).
-
-    2. F3X TOOL MODIFICATION (`f3x.lua`):
-       - The actual F3X tool script (downloaded from `https://raw.githubusercontent.com/infyiff/backup/refs/heads/main/f3x.lua`)
-         MUST BE MODIFIED.
-       - You need to edit `f3x.lua` (or hook its functions after it's loaded by this script)
-         so that whenever the F3X tool changes a part's property, it calls:
-         `_G.SendF3XEdit(theEditedPartInstance, "ThePropertyName", theNewValue)`
-       - Without this modification to the F3X tool itself, your local edits will
-         NEVER be sent to the relay server, and others will not see them.
-
-    This script provides the CLIENT-SIDE framework. The executor runs this client-side
-    script. It DOES NOT provide the relay server or automatically modify f3x.lua.
+    This framework WILL NOT WORK OUT OF THE BOX. It requires YOU to:
+    1. Set up an EXTERNAL HTTP RELAY SERVER and update `_G.F3X_PEER_SERVER_URL`.
+    2. MANUALLY MODIFY the `f3x.lua` script (that this script downloads) to call
+       `_G.SendF3XEdit(part, property, value)` whenever F3X makes an edit.
+    Without these, the peer synchronization will not function.
 ]]
 _G.F3X_PEER_SERVER_URL = "http://your-external-relay-server.com/f3x_edits" -- !!! IMPORTANT: Replace with your actual server URL !!!
 _G.F3X_PEER_SYNC_INITIALIZED = false
-_G.F3X_LAST_CHECK_TIMESTAMP_ID = "0" -- Start with a baseline timestamp or ID (your server might use incrementing IDs or timestamps)
+_G.F3X_LAST_CHECK_TIMESTAMP_ID = "0" 
 
 function _G.SerializeF3XValue(value)
     local valueType = typeof(value)
     local serializableValue = value
     local customType = valueType
-
-    if valueType == "CFrame" then
-        serializableValue = {value:GetComponents()}
-        customType = "CFrame"
-    elseif valueType == "Color3" then
-        serializableValue = {R=value.R, G=value.G, B=value.B}
-        customType = "Color3"
-    elseif valueType == "Vector3" then
-        serializableValue = {X=value.X, Y=value.Y, Z=value.Z}
-        customType = "Vector3"
-    elseif valueType == "EnumItem" then
-        serializableValue = {EnumType=value.EnumType.Name, Name=value.Name}
-        customType = "EnumItem"
-    elseif valueType == "BrickColor" then
-        serializableValue = value.Name
-        customType = "BrickColor"
-    elseif valueType == "UDim2" then
-        serializableValue = {XScale=value.X.Scale, XOffset=value.X.Offset, YScale=value.Y.Scale, YOffset=value.Y.Offset}
-        customType = "UDim2"
-    -- Add other Roblox-specific types as needed (e.g., NumberSequence, ColorSequence, etc.)
+    if valueType == "CFrame" then serializableValue = {value:GetComponents()}; customType = "CFrame"
+    elseif valueType == "Color3" then serializableValue = {R=value.R, G=value.G, B=value.B}; customType = "Color3"
+    elseif valueType == "Vector3" then serializableValue = {X=value.X, Y=value.Y, Z=value.Z}; customType = "Vector3"
+    elseif valueType == "EnumItem" then serializableValue = {EnumType=value.EnumType.Name, Name=value.Name}; customType = "EnumItem"
+    elseif valueType == "BrickColor" then serializableValue = value.Name; customType = "BrickColor"
+    elseif valueType == "UDim2" then serializableValue = {XScale=value.X.Scale, XOffset=value.X.Offset, YScale=value.Y.Scale, YOffset=value.Y.Offset}; customType = "UDim2"
     end
     return serializableValue, customType
 end
 
 function _G.DeserializeF3XValue(receivedValue, valueType)
     local finalValue = receivedValue
-    if valueType == "CFrame" and type(receivedValue) == "table" then
-        finalValue = CFrame.new(unpack(receivedValue))
-    elseif valueType == "Color3" and type(receivedValue) == "table" then
-        finalValue = Color3.new(receivedValue.R, receivedValue.G, receivedValue.B) -- Assuming 0-1 range
-    elseif valueType == "Vector3" and type(receivedValue) == "table" then
-        finalValue = Vector3.new(receivedValue.X, receivedValue.Y, receivedValue.Z)
+    if valueType == "CFrame" and type(receivedValue) == "table" then finalValue = CFrame.new(unpack(receivedValue))
+    elseif valueType == "Color3" and type(receivedValue) == "table" then finalValue = Color3.new(receivedValue.R, receivedValue.G, receivedValue.B)
+    elseif valueType == "Vector3" and type(receivedValue) == "table" then finalValue = Vector3.new(receivedValue.X, receivedValue.Y, receivedValue.Z)
     elseif valueType == "EnumItem" and type(receivedValue) == "table" then
-        if Enum[receivedValue.EnumType] and Enum[receivedValue.EnumType][receivedValue.Name] then
-            finalValue = Enum[receivedValue.EnumType][receivedValue.Name]
-        else
-            -- print("F3X_PEER_SYNC: Unknown Enum " .. tostring(receivedValue.EnumType) .. "." .. tostring(receivedValue.Name))
-            return nil -- Or handle error
-        end
-    elseif valueType == "BrickColor" then
-        finalValue = BrickColor.new(receivedValue)
-    elseif valueType == "UDim2" and type(receivedValue) == "table" then
-        finalValue = UDim2.new(receivedValue.XScale, receivedValue.XOffset, receivedValue.YScale, receivedValue.YOffset)
-    -- Add other types
+        if Enum[receivedValue.EnumType] and Enum[receivedValue.EnumType][receivedValue.Name] then finalValue = Enum[receivedValue.EnumType][receivedValue.Name] else return nil end
+    elseif valueType == "BrickColor" then finalValue = BrickColor.new(receivedValue)
+    elseif valueType == "UDim2" and type(receivedValue) == "table" then finalValue = UDim2.new(receivedValue.XScale, receivedValue.XOffset, receivedValue.YScale, receivedValue.YOffset)
     end
     return finalValue
 end
 
 function _G.SendF3XEdit(partInstance, propertyName, newValue)
-    if not httprequest or not HttpService then
-        -- print("F3X_PEER_SYNC: httprequest or HttpService not available.")
-        return
-    end
-    if not partInstance or not पार्टInstance:IsA("Instance") or not partInstance.Parent then
-        -- print("F3X_PEER_SYNC: Invalid part instance for sending edit: " .. tostring(partInstance))
-        return
-    end
-
-    local partPath
-    local successPath, resultPath = pcall(function() return partInstance:GetFullName() end)
-    if not successPath then
-        -- print("F3X_PEER_SYNC: Could not get full name for part: " .. tostring(partInstance))
-        return
-    end
-    partPath = resultPath
-
+    if not httprequest or not HttpService then return end
+    if not partInstance or not पार्टInstance:IsA("Instance") or not partInstance.Parent then return end
+    local partPath; local successPath, resultPath = pcall(function() return partInstance:GetFullName() end)
+    if not successPath then return end; partPath = resultPath
     local serializableValue, valueType = _G.SerializeF3XValue(newValue)
-
-    local payloadTable = {
-        senderUserId = Players.LocalPlayer.UserId,
-        timestamp = os.time(), -- Your server should ideally manage unique IDs for ordering if os.time isn't sufficient
-        partPath = partPath,
-        propertyName = propertyName,
-        value = serializableValue,
-        valueType = valueType
-    }
-    
+    local payloadTable = {senderUserId = Players.LocalPlayer.UserId, timestamp = os.time(), partPath = partPath, propertyName = propertyName, value = serializableValue, valueType = valueType}
     local successEncode, payloadJson = pcall(HttpService.JSONEncode, HttpService, payloadTable)
-    if not successEncode then
-        -- print("F3X_PEER_SYNC: Failed to encode JSON payload: " .. tostring(payloadJson))
-        return
-    end
-
-    pcall(function()
-        httprequest({
-            Url = _G.F3X_PEER_SERVER_URL,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payloadJson
-        })
-    end)
+    if not successEncode then return end
+    pcall(function() httprequest({ Url = _G.F3X_PEER_SERVER_URL, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = payloadJson }) end)
 end
 
 function _G.ApplyF3XEdit(editData)
-    if not editData or type(editData) ~= "table" or editData.senderUserId == Players.LocalPlayer.UserId then
-        return -- Don't apply edits from self if server echoes them, or if data is invalid
-    end
-
-    local rootService = game -- Default to game, can be Workspace or other services
-    local pathSegments = editData.partPath:split(".")
-    
-    -- Determine the root service (e.g. Workspace, Lighting, ReplicatedStorage)
-    if #pathSegments > 0 then
-        local service = game:GetService(pathSegments[1])
-        if service then
-            rootService = service
-            table.remove(pathSegments, 1)
-        else 
-            -- If not a service, assume it's a child of game (like Workspace implicitly)
-            -- or the path is already relative to 'game'
-            if game[pathSegments[1]] then
-                 rootService = game[pathSegments[1]]
-                 table.remove(pathSegments, 1)
-            else
-                 -- if path is like "PartName" and not "Workspace.PartName"
-                 -- we assume workspace by default later
-                 rootService = workspace 
-            end
-        end
-    else
-        return -- Invalid path
-    end
-
+    if not editData or type(editData) ~= "table" or editData.senderUserId == Players.LocalPlayer.UserId then return end
+    local rootService = game; local pathSegments = editData.partPath:split(".")
+    if #pathSegments > 0 then local service = game:GetService(pathSegments[1])
+        if service then rootService = service; table.remove(pathSegments, 1)
+        else if game[pathSegments[1]] then rootService = game[pathSegments[1]]; table.remove(pathSegments, 1) else rootService = workspace end end
+    else return end
     local targetPart = rootService
-    for _, segment in ipairs(pathSegments) do
-        targetPart = targetPart:FindFirstChild(segment)
-        if not targetPart then
-            -- print("F3X_PEER_SYNC: Could not find part segment '" .. segment .. "' in path '" .. editData.partPath .. "' under " .. rootService:GetFullName())
-            return
-        end
-    end
-
-    if not targetPart or not targetPart:IsA("Instance") then
-        -- print("F3X_PEER_SYNC: Final target part not found or invalid for path " .. editData.partPath)
-        return
-    end
-
-    local propertyName = editData.propertyName
-    local finalValue = _G.DeserializeF3XValue(editData.value, editData.valueType)
-    
-    if finalValue == nil and editData.valueType ~= "nil" and editData.valueType ~= "boolean" then -- boolean can be false
-      -- print("F3X_PEER_SYNC: Deserialized value is nil for property " .. propertyName .. " on " .. targetPart:GetFullName() .. " with type " .. editData.valueType)
-      return
-    end
-
-    local success, err = pcall(function()
-        targetPart[propertyName] = finalValue
-    end)
-    if not success then
-        -- print("F3X_PEER_SYNC: Error applying property '" .. propertyName .. "' to '" .. targetPart:GetFullName() .. "': " .. err)
-    end
+    for _, segment in ipairs(pathSegments) do targetPart = targetPart:FindFirstChild(segment); if not targetPart then return end end
+    if not targetPart or not targetPart:IsA("Instance") then return end
+    local propertyName = editData.propertyName; local finalValue = _G.DeserializeF3XValue(editData.value, editData.valueType)
+    if finalValue == nil and editData.valueType ~= "nil" and editData.valueType ~= "boolean" then return end
+    pcall(function() targetPart[propertyName] = finalValue end)
 end
 
--- iyassets, getcustomasset, makefolder logic...
--- ... (The entire original script's GUI setup, instance declarations, theme tables, etc.) ...
--- ... (All the way to the command definitions `addcmd`) ...
+-- ... (iyassets, getcustomasset, makefolder logic, GUI Instance.new declarations, etc. from original script) ...
+-- ... (all the way up to the function `InitializeAndRunF3XSystem` and `addcmd` definitions)
 
--- This function will now handle loading F3X and initializing the peer sync system
+-- This function now handles loading F3X and initializing the peer sync system
 function InitializeAndRunF3XSystem()
     if getgenv().F3XSystemLoaded then
-        if typeof(notify) == "function" then notify("F3X", "F3X system already loaded/active.") end
-        -- You might want to add logic here to re-show the F3X GUI if it has a toggle
+        if typeof(notify) == "function" then notify("F3X", "F3X system already active.") end
         return
     end
 
-    if typeof(notify) == "function" then notify("F3X", "Initializing F3X Tool with Peer Sync framework...") end
+    if typeof(notify) == "function" then notify("F3X", "Loading F3X Tool & Peer Sync Framework...") end
 
     if not _G.F3X_PEER_SYNC_INITIALIZED then
         _G.F3X_PEER_SYNC_INITIALIZED = true
-        
         task.spawn(function()
             if typeof(notify) == "function" then 
-                notify("F3X Peer Sync", "Polling for peer edits started. This REQUIRES you to have set up an external relay server (see _G.F3X_PEER_SERVER_URL) AND modified f3x.lua to call _G.SendF3XEdit. It will not work otherwise.")
+                notify("F3X Peer Sync", "Polling for peer edits started. This REQUIRES your external relay server (see _G.F3X_PEER_SERVER_URL) AND manual modification of f3x.lua to send edits.")
             end
-            while wait(1) do -- Poll interval (e.g., every 1 second)
+            while wait(1) do 
                 if not httprequest or not HttpService or not _G.F3X_PEER_SYNC_INITIALIZED then
                     if not _G.F3X_PEER_SYNC_INITIALIZED then break end 
                     continue
                 end
-                
-                local success, response = pcall(function()
-                    return httprequest({
-                        Url = _G.F3X_PEER_SERVER_URL .. "?since=" .. tostring(_G.F3X_LAST_CHECK_TIMESTAMP_ID) .. "&exclude_id=" .. Players.LocalPlayer.UserId,
-                        Method = "GET"
-                    })
-                end)
-
-                if success and response and response.Success and response.Body then
-                    local decodedSuccess, responseObject = pcall(HttpService.JSONDecode, HttpService, response.Body)
-                    if decodedSuccess and type(responseObject) == "table" and type(responseObject.edits) == "table" then
-                        local editsArray = responseObject.edits
-                        for _, editData in ipairs(editsArray) do
-                            if type(editData) == "table" then
-                                _G.ApplyF3XEdit(editData)
-                            end
-                        end
-                        if responseObject.next_since then
-                           _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(responseObject.next_since)
-                        elseif #editsArray > 0 then
-                            local lastEdit = editsArray[#editsArray]
-                            if lastEdit and (lastEdit.timestamp or lastEdit.id) then
-                                _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(lastEdit.timestamp or lastEdit.id)
-                            else
-                                _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(os.time()) 
-                            end
-                        end
-                    else
-                        -- print("F3X_PEER_SYNC: Failed to decode JSON response or response format is incorrect: " .. tostring(responseObject))
+                local s, r = pcall(function() return httprequest({Url = _G.F3X_PEER_SERVER_URL .. "?since=" .. tostring(_G.F3X_LAST_CHECK_TIMESTAMP_ID) .. "&exclude_id=" .. Players.LocalPlayer.UserId, Method = "GET"}) end)
+                if s and r and r.Success and r.Body then
+                    local ds, resObj = pcall(HttpService.JSONDecode, HttpService, r.Body)
+                    if ds and type(resObj)=="table" and type(resObj.edits)=="table" then
+                        for _,eD in ipairs(resObj.edits) do if type(eD)=="table" then _G.ApplyF3XEdit(eD) end end
+                        if resObj.next_since then _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(resObj.next_since)
+                        elseif #resObj.edits > 0 then local lE=resObj.edits[#resObj.edits]; if lE and (lE.timestamp or lE.id) then _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(lE.timestamp or lE.id) else _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(os.time()) end end
                     end
-                elseif not success then
-                    -- print("F3X_PEER_SYNC: HTTP request failed: " .. tostring(response))
                 end
             end
-            -- print("F3X_PEER_SYNC: Polling loop stopped.")
         end)
     end
 
-    local f3xScriptContent_Success, f3xScriptContent = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/infyiff/backup/refs/heads/main/f3x.lua") end)
-    if not f3xScriptContent_Success or not f3xScriptContent then
-        if typeof(notify) == "function" then notify("F3X Error", "Could not download f3x.lua: " .. tostring(f3xScriptContent)) end
-        _G.F3X_PEER_SYNC_INITIALIZED = false 
-        return
+    local f3xS_Suc, f3xS_Con = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/infyiff/backup/refs/heads/main/f3x.lua") end)
+    if not f3xS_Suc or not f3xS_Con then
+        if typeof(notify)=="function" then notify("F3X Error","Could not download f3x.lua: " .. tostring(f3xS_Con)) end; _G.F3X_PEER_SYNC_INITIALIZED=false; return
     end
     
-    -- CRITICAL STEP REMINDER FOR THE USER:
-    -- The 'f3xScriptContent' (the f3x.lua code) needs to be MODIFIED MANUALLY by you or someone
-    -- to call `_G.SendF3XEdit(thePartInstance, "ThePropertyName", theNewValue)`
-    -- whenever the F3X tool makes a property change via its GUI or internal functions.
-    -- This script CANNOT do that modification for you because it's modifying the behavior
-    -- of an externally loaded script. Without this, F3X edits will NOT be sent.
+    --[[
+        CRITICAL USER ACTION REQUIRED:
+        The 'f3x.lua' (f3xS_Con) code MUST BE MANUALLY EDITED by you.
+        You need to find where F3X applies property changes and add:
+           _G.SendF3XEdit(targetPartInstance, "PropertyName", newValue)
+        This script CANNOT do this for you. Without it, peer sync WILL NOT SEND edits.
+    ]]
     
-    local f3xEnv = {} -- Create an environment for F3X if needed, or let it use _G
-    local f3xFunc, f3xLoadError = loadstring(f3xScriptContent, "f3x.lua_ PeersyncContext")
-    
+    local f3xFunc, f3xLErr = loadstring(f3xS_Con, "f3x.lua_PeersyncContext")
     if f3xFunc then
-        setfenv(f3xFunc, getfenv()) -- Or setfenv(f3xFunc, f3xEnv) if you want to sandbox it more
-        local successCall, callError = pcall(f3xFunc)
-        if successCall then
-            getgenv().F3XSystemLoaded = true
-            if typeof(notify) == "function" then notify("F3X", "F3X tool system loaded. Remember: Manual F3X modification is needed for peer sync to send edits.") end
-        else
-            if typeof(notify) == "function" then notify("F3X Load Error", "Error executing f3x.lua: " .. tostring(callError)) end
-            _G.F3X_PEER_SYNC_INITIALIZED = false 
+        setfenv(f3xFunc, getfenv()) 
+        local sC, cErr = pcall(f3xFunc)
+        if sC then getgenv().F3XSystemLoaded=true; if typeof(notify)=="function" then notify("F3X","F3X tool GUI system loaded. Remember: Manual f3x.lua modification needed for peer sync to send edits.")end
+        else if typeof(notify)=="function" then notify("F3X Load Error","Error executing f3x.lua: " .. tostring(cErr))end; _G.F3X_PEER_SYNC_INITIALIZED=false end
+    else if typeof(notify)=="function" then notify("F3X Load Error","Error loading f3x.lua string: " .. tostring(f3xLErr))end; _G.F3X_PEER_SYNC_INITIALIZED=false end
+end
+
+-- Function to create the F3X Launcher Tool in the player's backpack
+function CreateF3XLauncherTool()
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then 
+        task.wait(1) -- Wait for player to be available
+        localPlayer = Players.LocalPlayer
+        if not localPlayer then
+             print("Infinite Yield: LocalPlayer not found, cannot create F3X Launcher tool.")
+             return
         end
+    end
+
+    local backpack = localPlayer:FindFirstChildOfClass("Backpack")
+    if not backpack then
+        -- Attempt to wait for backpack if player just joined
+        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            backpack = localPlayer:WaitForChild("Backpack", 5)
+        end
+        if not backpack then
+            print("Infinite Yield: Backpack not found. F3X will try to auto-activate directly if this tool fails.")
+            -- Fallback to direct activation if backpack method fails
+            task.delay(2, function()
+                if not getgenv().F3XSystemLoaded then
+                    InitializeAndRunF3XSystem()
+                end
+            end)
+            return
+        end
+    end
+
+    if backpack:FindFirstChild("F3X Launcher Tool (IY)") then
+        if typeof(notify) == "function" then notify("F3X", "Launcher tool already in inventory. Equip it or use ;f3x.") end
+        return
+    end
+
+    local launcherTool = Instance.new("Tool")
+    launcherTool.Name = "F3X Launcher Tool (IY)"
+    launcherTool.ToolTip = "Equip this tool to activate the F3X Building GUI System."
+    launcherTool.TextureID = "rbxassetid://1352543873" -- IY Logo as icon
+    launcherTool.RequiresHandle = false 
+
+    local activatedAlready = false
+    local equipConnection
+    equipConnection = launcherTool.Equipped:Connect(function()
+        if activatedAlready and getgenv().F3XSystemLoaded then
+             if typeof(notify) == "function" then notify("F3X Launcher", "F3X System is already active.") end
+        else
+            if typeof(notify) == "function" then notify("F3X Launcher", "Activating F3X Building GUI System...") end
+            InitializeAndRunF3XSystem()
+            activatedAlready = true 
+        end
+        
+        task.wait(0.2) 
+        if launcherTool.Parent == localPlayer.Character then
+            local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then humanoid:UnequipTools() end
+        end
+    end)
+    
+    -- Cleanup connection if tool is removed
+    launcherTool.AncestryChanged:Connect(function(_, parent)
+        if not parent and equipConnection then
+            equipConnection:Disconnect()
+            equipConnection = nil
+        end
+    end)
+
+    launcherTool.Parent = backpack
+    if typeof(notify) == "function" then
+        notify("Infinite Yield", "F3X Launcher tool added to your inventory. Equip it to start the F3X GUI.")
     else
-        if typeof(notify) == "function" then notify("F3X Load Error", "Error loading f3x.lua string: " .. tostring(f3xLoadError)) end
-        _G.F3X_PEER_SYNC_INITIALIZED = false
+        print("Infinite Yield: F3X Launcher tool added to inventory. Equip it to start the F3X GUI.")
     end
 end
 
--- ... (Define all your other IY commands as in the original script) ...
+-- ... (Define all other IY commands as in the original script) ...
 
 -- Modify the existing f3x command to use the new initialization function
 addcmd('f3x',{'fex'},function(args, speaker)
     InitializeAndRunF3XSystem()
 end)
 
--- ... (Rest of the original script, including event connections, GUI interactions, etc.) ...
+-- ... (All other commands and remaining script logic from original) ...
 
 -- At the very end of the script, after all IY initializations are done:
 task.spawn(function()
     wait(7) -- Wait for IY GUI and other things to settle
 
-    -- Automatically initialize and run the F3X system with peer sync
-    -- This will make F3X available as soon as the script runs.
-    InitializeAndRunF3XSystem()
+    -- Create the F3X Launcher tool in the player's backpack
+    CreateF3XLauncherTool()
 
-    if getgenv().F3XSystemLoaded then
-        if _G.F3X_PEER_SYNC_INITIALIZED then
-            print("Infinite Yield: F3X system auto-activated with Peer Synchronization polling enabled. External server and f3x.lua modifications are required for this feature to work.")
-        else
-            print("Infinite Yield: F3X system auto-activated, but Peer Synchronization polling did NOT start (check for errors or ensure httprequest is available).")
-        end
-    else
-        print("Infinite Yield: F3X system failed to auto-activate. Check for errors during F3X loading.")
-    end
+    -- Note: The F3X system itself will now only fully load and start polling
+    -- when the launcher tool is equipped (or if the ;f3x command is used).
+    -- The message about F3XSystemLoaded will appear after equipping the tool.
 end)
