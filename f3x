@@ -1,305 +1,655 @@
--- [Infinite Yield Script - Modified for F3X Launcher Tool & Conceptual Peer Sync]
-
--- Start of IY_LOADED and utility functions
-if IY_LOADED and not _G.IY_DEBUG == true then
-    return
-end
-pcall(function() getgenv().IY_LOADED = true end)
-if not game:IsLoaded() then game.Loaded:Wait() end
-
-function missing(t, f, fallback)
-    if type(f) == t then return f end
-    return fallback or nil
-end
-cloneref = missing("function", cloneref, function(...) return ... end)
-sethidden =  missing("function", sethiddenproperty or set_hidden_property or set_hidden_prop)
-gethidden =  missing("function", gethiddenproperty or get_hidden_property or get_hidden_prop)
-queueteleport =  missing("function", queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport))
-httprequest =  missing("function", request or http_request or (syn and syn.request) or (http and http.request) or (fluxus and fluxus.request)) -- Used by peer sync
-everyClipboard = missing("function", setclipboard or toclipboard or set_clipboard or (Clipboard and Clipboard.set))
-firetouchinterest = missing("function", firetouchinterest)
-waxwritefile, waxreadfile = writefile, readfile
-writefile = missing("function", waxwritefile) and function(file, data, safe)
-    if safe == true then return pcall(waxwritefile, file, data) end
-    waxwritefile(file, data)
-end
-readfile = missing("function", waxreadfile) and function(file, safe)
-    if safe == true then return pcall(waxreadfile, file) end
-    return waxreadfile(file)
-end
-isfile = missing("function", isfile, readfile and function(file)
-    local success, result = pcall(function()
-        return readfile(file)
-    end)
-    return success and result ~= nil and result ~= ""
-end)
-makefolder = missing("function", makefolder)
-isfolder = missing("function", isfolder)
-waxgetcustomasset = missing("function", getcustomasset or getsynasset)
-hookfunction = missing("function", hookfunction)
-hookmetamethod = missing("function", hookmetamethod)
-getnamecallmethod = missing("function", getnamecallmethod or get_namecall_method)
-checkcaller = missing("function", checkcaller, function() return false end)
-newcclosure = missing("function", newcclosure)
-getgc = missing("function", getgc or get_gc_objects)
-setthreadidentity = missing("function", setthreadidentity or (syn and syn.set_thread_identity) or syn_context_set or setthreadcontext)
-replicatesignal = missing("function", replicatesignal)
-
-COREGUI = cloneref(game:GetService("CoreGui"))
-Players = cloneref(game:GetService("Players"))
-UserInputService = cloneref(game:GetService("UserInputService"))
-TweenService = cloneref(game:GetService("TweenService"))
-HttpService = cloneref(game:GetService("HttpService")) -- Used by peer sync
-MarketplaceService = cloneref(game:GetService("MarketplaceService"))
-RunService = cloneref(game:GetService("RunService"))
-TeleportService = cloneref(game:GetService("TeleportService"))
-StarterGui = cloneref(game:GetService("StarterGui"))
-GuiService = cloneref(game:GetService("GuiService"))
-Lighting = cloneref(game:GetService("Lighting"))
-ContextActionService = cloneref(game:GetService("ContextActionService"))
-ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
-GroupService = cloneref(game:GetService("GroupService"))
-PathService = cloneref(game:GetService("PathfindingService"))
-SoundService = cloneref(game:GetService("SoundService"))
-Teams = cloneref(game:GetService("Teams"))
-StarterPlayer = cloneref(game:GetService("StarterPlayer"))
-InsertService = cloneref(game:GetService("InsertService"))
-ChatService = cloneref(game:GetService("Chat"))
-ProximityPromptService = cloneref(game:GetService("ProximityPromptService"))
-ContentProvider = cloneref(game:GetService("ContentProvider"))
-StatsService = cloneref(game:GetService("Stats"))
-MaterialService = cloneref(game:GetService("MaterialService"))
-AvatarEditorService = cloneref(game:GetService("AvatarEditorService"))
-TextService = cloneref(game:GetService("TextService"))
-TextChatService = cloneref(game:GetService("TextChatService"))
-CaptureService = cloneref(game:GetService("CaptureService"))
-VoiceChatService = cloneref(game:GetService("VoiceChatService"))
-
-IYMouse = cloneref(Players.LocalPlayer:GetMouse())
-PlayerGui = cloneref(Players.LocalPlayer:FindFirstChildWhichIsA("PlayerGui"))
-PlaceId, JobId = game.PlaceId, game.JobId
-IsOnMobile = table.find({Enum.Platform.Android, Enum.Platform.IOS}, UserInputService:GetPlatform())
-isLegacyChat = TextChatService.ChatVersion == Enum.ChatVersion.LegacyChatService
-
-
 --[[
-    F3X PEER SYNCHRONIZATION FRAMEWORK (CONCEPTUAL - REQUIRES EXTERNAL SETUP)
-
-    This framework WILL NOT WORK OUT OF THE BOX. It requires YOU to:
-    1. Set up an EXTERNAL HTTP RELAY SERVER and update `_G.F3X_PEER_SERVER_URL`.
-    2. MANUALLY MODIFY the `f3x.lua` script (that this script downloads) to call
-       `_G.SendF3XEdit(part, property, value)` whenever F3X makes an edit.
-    Without these, the peer synchronization will not function.
+    FE_F3X_Client.lua
+    Client-side script for a simplified Filtering Enabled F3X-like building tool.
+    Users must also have the FE_F3X_Server.lua script running on the server.
 ]]
-_G.F3X_PEER_SERVER_URL = "http://your-external-relay-server.com/f3x_edits" -- !!! IMPORTANT: Replace with your actual server URL !!!
-_G.F3X_PEER_SYNC_INITIALIZED = false
-_G.F3X_LAST_CHECK_TIMESTAMP_ID = "0" 
 
-function _G.SerializeF3XValue(value)
-    local valueType = typeof(value)
-    local serializableValue = value
-    local customType = valueType
-    if valueType == "CFrame" then serializableValue = {value:GetComponents()}; customType = "CFrame"
-    elseif valueType == "Color3" then serializableValue = {R=value.R, G=value.G, B=value.B}; customType = "Color3"
-    elseif valueType == "Vector3" then serializableValue = {X=value.X, Y=value.Y, Z=value.Z}; customType = "Vector3"
-    elseif valueType == "EnumItem" then serializableValue = {EnumType=value.EnumType.Name, Name=value.Name}; customType = "EnumItem"
-    elseif valueType == "BrickColor" then serializableValue = value.Name; customType = "BrickColor"
-    elseif valueType == "UDim2" then serializableValue = {XScale=value.X.Scale, XOffset=value.X.Offset, YScale=value.Y.Scale, YOffset=value.Y.Offset}; customType = "UDim2"
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+
+-- Local Player
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- Configuration
+local TOOL_GUID_ATTRIBUTE = "FE_F3X_GUID"
+local ACTION_TO_SERVER_EVENT_NAME = "FE_F3X_ActionToServer"
+local ACTION_TO_CLIENT_EVENT_NAME = "FE_F3X_ActionToClient"
+
+-- RemoteEvents (Client gets/creates them)
+local actionToServerEvent = ReplicatedStorage:FindFirstChild(ACTION_TO_SERVER_EVENT_NAME)
+if not actionToServerEvent then
+    actionToServerEvent = Instance.new("RemoteEvent")
+    actionToServerEvent.Name = ACTION_TO_SERVER_EVENT_NAME
+    actionToServerEvent.Parent = ReplicatedStorage
+    -- warn("FE_F3X_Client: Created ActionToServer RemoteEvent.")
+end
+
+local actionToClientEvent = ReplicatedStorage:FindFirstChild(ACTION_TO_CLIENT_EVENT_NAME)
+if not actionToClientEvent then
+    actionToClientEvent = Instance.new("RemoteEvent")
+    actionToClientEvent.Name = ACTION_TO_CLIENT_EVENT_NAME
+    actionToClientEvent.Parent = ReplicatedStorage
+    -- warn("FE_F3X_Client: Created ActionToClient RemoteEvent.")
+end
+
+-- Tool State
+local currentTool = "Select" -- Select, Create, Move, Resize, Color, Material, Delete, Anchor
+local selectedPart = nil
+local selectionBox = nil
+local isDragging = false
+local dragOriginCFrame
+local dragMouseOriginHit
+local dragMode = "XZ" -- or "Y"
+
+-- GUI Elements
+local gui = Instance.new("ScreenGui")
+gui.Name = "FE_F3X_Gui"
+gui.ResetOnSpawn = false
+gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 220, 0, 450)
+mainFrame.Position = UDim2.new(0.01, 0, 0.1, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+mainFrame.BorderColor3 = Color3.fromRGB(80, 80, 80)
+mainFrame.BorderSizePixel = 2
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = gui
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "Title"
+titleLabel.Size = UDim2.new(1, 0, 0, 30)
+titleLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+titleLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+titleLabel.Text = "FE F3X Lite"
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.TextSize = 18
+titleLabel.Parent = mainFrame
+
+local toolFrame = Instance.new("ScrollingFrame")
+toolFrame.Name = "ToolFrame"
+toolFrame.Size = UDim2.new(1, -10, 0, 180)
+toolFrame.Position = UDim2.new(0, 5, 0, 35)
+toolFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+toolFrame.CanvasSize = UDim2.new(0,0,0,0) -- Will be updated by UIListLayout
+toolFrame.ScrollBarThickness = 6
+toolFrame.Parent = mainFrame
+
+local toolListLayout = Instance.new("UIListLayout")
+toolListLayout.Padding = UDim.new(0, 5)
+toolListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+toolListLayout.Parent = toolFrame
+
+local propertyFrame = Instance.new("Frame")
+propertyFrame.Name = "PropertyFrame"
+propertyFrame.Size = UDim2.new(1, -10, 0, 220)
+propertyFrame.Position = UDim2.new(0, 5, 0, 220)
+propertyFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+propertyFrame.LayoutOrder = 2
+propertyFrame.Parent = mainFrame
+
+local propertyListLayout = Instance.new("UIListLayout")
+propertyListLayout.Padding = UDim.new(0, 5)
+propertyListLayout.Parent = propertyFrame
+
+-- Helper Function to create buttons
+local function createButton(text, parent, layoutOrder, callback)
+    local button = Instance.new("TextButton")
+    button.Name = text .. "Button"
+    button.Text = text
+    button.Size = UDim2.new(1, 0, 0, 25)
+    button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    button.TextColor3 = Color3.fromRGB(200, 200, 200)
+    button.Font = Enum.Font.SourceSans
+    button.TextSize = 14
+    button.LayoutOrder = layoutOrder
+    button.Parent = parent
+    if callback then
+        button.MouseButton1Click:Connect(callback)
     end
-    return serializableValue, customType
+    return button
 end
 
-function _G.DeserializeF3XValue(receivedValue, valueType)
-    local finalValue = receivedValue
-    if valueType == "CFrame" and type(receivedValue) == "table" then finalValue = CFrame.new(unpack(receivedValue))
-    elseif valueType == "Color3" and type(receivedValue) == "table" then finalValue = Color3.new(receivedValue.R, receivedValue.G, receivedValue.B)
-    elseif valueType == "Vector3" and type(receivedValue) == "table" then finalValue = Vector3.new(receivedValue.X, receivedValue.Y, receivedValue.Z)
-    elseif valueType == "EnumItem" and type(receivedValue) == "table" then
-        if Enum[receivedValue.EnumType] and Enum[receivedValue.EnumType][receivedValue.Name] then finalValue = Enum[receivedValue.EnumType][receivedValue.Name] else return nil end
-    elseif valueType == "BrickColor" then finalValue = BrickColor.new(receivedValue)
-    elseif valueType == "UDim2" and type(receivedValue) == "table" then finalValue = UDim2.new(receivedValue.XScale, receivedValue.XOffset, receivedValue.YScale, receivedValue.YOffset)
+-- Helper Function to create property inputs
+local function createPropertyInput(labelText, parent, inputType, callback)
+    local propRow = Instance.new("Frame")
+    propRow.Name = labelText .. "Row"
+    propRow.Size = UDim2.new(1, 0, 0, 25)
+    propRow.BackgroundTransparency = 1
+    propRow.Parent = parent
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Size = UDim2.new(0.4, -5, 1, 0)
+    label.Text = labelText .. ":"
+    label.TextColor3 = Color3.fromRGB(200, 200, 200)
+    label.Font = Enum.Font.SourceSans
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.BackgroundTransparency = 1
+    label.Parent = propRow
+
+    if inputType == "TextBox" then
+        local textBox = Instance.new("TextBox")
+        textBox.Name = "Input"
+        textBox.Size = UDim2.new(0.6, 0, 1, 0)
+        textBox.Position = UDim2.new(0.4, 0, 0, 0)
+        textBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        textBox.TextColor3 = Color3.fromRGB(200, 200, 200)
+        textBox.Font = Enum.Font.SourceSans
+        textBox.TextSize = 12
+        textBox.ClearTextOnFocus = false
+        textBox.Parent = propRow
+        if callback then
+            textBox.FocusLost:Connect(function(enterPressed)
+                if enterPressed then
+                    callback(textBox.Text)
+                end
+            end)
+        end
+        return textBox
+    elseif inputType == "ColorInput" then -- R,G,B text boxes
+        local rBox = Instance.new("TextBox")
+        local gBox = Instance.new("TextBox")
+        local bBox = Instance.new("TextBox")
+        local boxes = {rBox, gBox, bBox}
+        local currentColors = {R=128, G=128, B=128}
+
+        for i, box in ipairs(boxes) do
+            box.Name = (i==1 and "R" or i==2 and "G" or "B") .. "Input"
+            box.Size = UDim2.new(0.2, -2, 1, 0)
+            box.Position = UDim2.new(0.4 + (i-1)*0.2, (i-1)*2, 0, 0)
+            box.BackgroundColor3 = Color3.fromRGB(30,30,30)
+            box.TextColor3 = Color3.fromRGB(200,200,200)
+            box.Font = Enum.Font.SourceSans
+            box.TextSize = 10
+            box.Text = "128"
+            box.ClearTextOnFocus = false
+            box.Parent = propRow
+            
+            box.FocusLost:Connect(function(enterPressed)
+                if enterPressed then
+                    local r = tonumber(rBox.Text) or currentColors.R
+                    local g = tonumber(gBox.Text) or currentColors.G
+                    local b = tonumber(bBox.Text) or currentColors.B
+                    r = math.clamp(r, 0, 255)
+                    g = math.clamp(g, 0, 255)
+                    b = math.clamp(b, 0, 255)
+                    rBox.Text, gBox.Text, bBox.Text = tostring(r), tostring(g), tostring(b)
+                    currentColors = {R=r, G=g, B=b}
+                    if callback then callback(Color3.fromRGB(r,g,b)) end
+                end
+            end)
+        end
+        return {R=rBox, G=gBox, B=bBox, GetColor = function() return Color3.fromRGB(tonumber(rBox.Text), tonumber(gBox.Text), tonumber(bBox.Text)) end, SetColor = function(c3)
+            rBox.Text = tostring(math.floor(c3.R*255))
+            gBox.Text = tostring(math.floor(c3.G*255))
+            bBox.Text = tostring(math.floor(c3.B*255))
+            currentColors = {R=math.floor(c3.R*255), G=math.floor(c3.G*255), B=math.floor(c3.B*255)}
+        end}
+    elseif inputType == "Dropdown" then
+        -- Simplified: using a TextButton that cycles through options
+        local dropdownButton = Instance.new("TextButton")
+        dropdownButton.Name = "DropdownButton"
+        dropdownButton.Size = UDim2.new(0.6, 0, 1, 0)
+        dropdownButton.Position = UDim2.new(0.4, 0, 0, 0)
+        dropdownButton.BackgroundColor3 = Color3.fromRGB(30,30,30)
+        dropdownButton.TextColor3 = Color3.fromRGB(200,200,200)
+        dropdownButton.Font = Enum.Font.SourceSans
+        dropdownButton.TextSize = 12
+        dropdownButton.Parent = propRow
+        
+        local currentIndex = 1
+        local options = {} -- Will be set by caller
+        
+        dropdownButton.MouseButton1Click:Connect(function()
+            currentIndex = (currentIndex % #options) + 1
+            dropdownButton.Text = options[currentIndex]
+            if callback then callback(options[currentIndex]) end
+        end)
+        
+        return {Button = dropdownButton, SetOptions = function(opts) 
+            options = opts 
+            if #options > 0 then 
+                dropdownButton.Text = options[1]
+                currentIndex = 1
+            end 
+        end, SetValue = function(val)
+            for i, opt in ipairs(options) do
+                if opt == val then
+                    currentIndex = i
+                    dropdownButton.Text = opt
+                    break
+                end
+            end
+        end}
     end
-    return finalValue
 end
 
-function _G.SendF3XEdit(partInstance, propertyName, newValue)
-    if not httprequest or not HttpService then return end
-    if not partInstance or not पार्टInstance:IsA("Instance") or not partInstance.Parent then return end
-    local partPath; local successPath, resultPath = pcall(function() return partInstance:GetFullName() end)
-    if not successPath then return end; partPath = resultPath
-    local serializableValue, valueType = _G.SerializeF3XValue(newValue)
-    local payloadTable = {senderUserId = Players.LocalPlayer.UserId, timestamp = os.time(), partPath = partPath, propertyName = propertyName, value = serializableValue, valueType = valueType}
-    local successEncode, payloadJson = pcall(HttpService.JSONEncode, HttpService, payloadTable)
-    if not successEncode then return end
-    pcall(function() httprequest({ Url = _G.F3X_PEER_SERVER_URL, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = payloadJson }) end)
+-- Update Selection Box
+local function updateSelectionBox()
+    if selectedPart and selectedPart.Parent then
+        if not selectionBox then
+            selectionBox = Instance.new("SelectionBox")
+            selectionBox.LineThickness = 0.05
+            selectionBox.Color3 = Color3.fromRGB(0, 255, 255)
+            selectionBox.Parent = gui -- Adorn to GUI to ensure visibility
+        end
+        selectionBox.Adornee = selectedPart
+    elseif selectionBox then
+        selectionBox.Adornee = nil
+    end
 end
 
-function _G.ApplyF3XEdit(editData)
-    if not editData or type(editData) ~= "table" or editData.senderUserId == Players.LocalPlayer.UserId then return end
-    local rootService = game; local pathSegments = editData.partPath:split(".")
-    if #pathSegments > 0 then local service = game:GetService(pathSegments[1])
-        if service then rootService = service; table.remove(pathSegments, 1)
-        else if game[pathSegments[1]] then rootService = game[pathSegments[1]]; table.remove(pathSegments, 1) else rootService = workspace end end
-    else return end
-    local targetPart = rootService
-    for _, segment in ipairs(pathSegments) do targetPart = targetPart:FindFirstChild(segment); if not targetPart then return end end
-    if not targetPart or not targetPart:IsA("Instance") then return end
-    local propertyName = editData.propertyName; local finalValue = _G.DeserializeF3XValue(editData.value, editData.valueType)
-    if finalValue == nil and editData.valueType ~= "nil" and editData.valueType ~= "boolean" then return end
-    pcall(function() targetPart[propertyName] = finalValue end)
-end
+-- Property Input Elements
+local sizeXInput, sizeYInput, sizeZInput
+local colorInputControls
+local materialDropdownControls
+local anchorButton
 
--- ... (iyassets, getcustomasset, makefolder logic, GUI Instance.new declarations, etc. from original script) ...
--- ... (all the way up to the function `InitializeAndRunF3XSystem` and `addcmd` definitions)
+-- Send Action Function
+local function sendAction(actionType, part, data)
+    if not actionToServerEvent then return end
+    local guid
+    if typeof(part) == "Instance" then
+        guid = part:GetAttribute(TOOL_GUID_ATTRIBUTE)
+        if not guid and actionType ~= "CreatePart" then
+            -- warn("FE_F3X_Client: Attempted to send action for non-tool part:", part)
+            return -- Only operate on parts created by this tool (unless creating)
+        end
+    elseif type(part) == "string" then -- GUID passed directly
+        guid = part
+    end
 
--- This function now handles loading F3X and initializing the peer sync system
-function InitializeAndRunF3XSystem()
-    if getgenv().F3XSystemLoaded then
-        if typeof(notify) == "function" then notify("F3X", "F3X system already active.") end
+    if not guid and actionType ~= "CreatePart" then
+        -- warn("FE_F3X_Client: No GUID for action", actionType)
         return
     end
+    
+    local actionData = {
+        ActionType = actionType,
+        PartGUID = guid, -- For existing parts
+        Data = data -- For CFrame, Color, Size, Material, or creation data
+    }
+    
+    -- For "CreatePart", PartGUID will be the new GUID, and Data contains initial properties
+    if actionType == "CreatePart" then
+        actionData.PartGUID = data.GUID -- The new GUID is in the data payload
+    end
 
-    if typeof(notify) == "function" then notify("F3X", "Loading F3X Tool & Peer Sync Framework...") end
+    -- pcall(function() actionToServerEvent:FireServer(actionData) end) -- This is the correct way for client-server
+    -- For testing without a full server script relaying back to OTHERS immediately (simulating server echo):
+    -- HandleReceivedF3XAction(LocalPlayer, actionData) -- Apply locally first
+    actionToServerEvent:FireServer(actionData)
+end
 
-    if not _G.F3X_PEER_SYNC_INITIALIZED then
-        _G.F3X_PEER_SYNC_INITIALIZED = true
-        task.spawn(function()
-            if typeof(notify) == "function" then 
-                notify("F3X Peer Sync", "Polling for peer edits started. This REQUIRES your external relay server (see _G.F3X_PEER_SERVER_URL) AND manual modification of f3x.lua to send edits.")
-            end
-            while wait(1) do 
-                if not httprequest or not HttpService or not _G.F3X_PEER_SYNC_INITIALIZED then
-                    if not _G.F3X_PEER_SYNC_INITIALIZED then break end 
-                    continue
+-- Update Property GUI from selected part
+local function updatePropertyGui()
+    if selectedPart and selectedPart.Parent then
+        local size = selectedPart.Size
+        sizeXInput.Text = string.format("%.2f", size.X)
+        sizeYInput.Text = string.format("%.2f", size.Y)
+        sizeZInput.Text = string.format("%.2f", size.Z)
+        colorInputControls.SetColor(selectedPart.Color)
+        materialDropdownControls.SetValue(selectedPart.Material.Name)
+        anchorButton.Text = selectedPart.Anchored and "Anchor: ON" or "Anchor: OFF"
+        anchorButton.BackgroundColor3 = selectedPart.Anchored and Color3.fromRGB(70,150,70) or Color3.fromRGB(150,70,70)
+    else
+        sizeXInput.Text = "0"
+        sizeYInput.Text = "0"
+        sizeZInput.Text = "0"
+        colorInputControls.SetColor(Color3.fromRGB(128,128,128))
+        materialDropdownControls.SetValue("Plastic")
+        anchorButton.Text = "Anchor: N/A"
+        anchorButton.BackgroundColor3 = Color3.fromRGB(60,60,60)
+    end
+end
+
+-- Tool Callbacks
+local function setTool(toolName)
+    currentTool = toolName
+    -- print("Tool changed to:", currentTool)
+    if currentTool ~= "Select" and currentTool ~= "Move" and currentTool ~= "Resize" then
+        if selectedPart then
+            selectedPart = nil -- Deselect when switching to non-manipulation tools (except move/resize)
+            updateSelectionBox()
+            updatePropertyGui()
+        end
+    end
+end
+
+createButton("Select", toolFrame, 1, function() setTool("Select") end)
+createButton("Create Box", toolFrame, 2, function() setTool("Create") end)
+createButton("Move", toolFrame, 3, function() setTool("Move") end)
+createButton("Resize", toolFrame, 4, function() setTool("Resize") end)
+createButton("Color", toolFrame, 5, function() setTool("Color") end)
+createButton("Material", toolFrame, 6, function() setTool("Material") end)
+createButton("Delete", toolFrame, 7, function() setTool("Delete") end)
+
+-- Property GUI elements
+sizeXInput = createPropertyInput("Size X", propertyFrame, "TextBox", function(text)
+    if selectedPart and selectedPart.Parent then
+        local val = tonumber(text) or selectedPart.Size.X
+        local newSize = Vector3.new(val, selectedPart.Size.Y, selectedPart.Size.Z)
+        sendAction("Size", selectedPart, newSize)
+    end
+end)
+sizeYInput = createPropertyInput("Size Y", propertyFrame, "TextBox", function(text)
+    if selectedPart and selectedPart.Parent then
+        local val = tonumber(text) or selectedPart.Size.Y
+        local newSize = Vector3.new(selectedPart.Size.X, val, selectedPart.Size.Z)
+        sendAction("Size", selectedPart, newSize)
+    end
+end)
+sizeZInput = createPropertyInput("Size Z", propertyFrame, "TextBox", function(text)
+    if selectedPart and selectedPart.Parent then
+        local val = tonumber(text) or selectedPart.Size.Z
+        local newSize = Vector3.new(selectedPart.Size.X, selectedPart.Size.Y, val)
+        sendAction("Size", selectedPart, newSize)
+    end
+end)
+
+colorInputControls = createPropertyInput("Color (RGB)", propertyFrame, "ColorInput", function(color)
+    if selectedPart and selectedPart.Parent and currentTool == "Color" then -- Only change color if color tool active
+        sendAction("Color", selectedPart, color)
+    elseif selectedPart and selectedPart.Parent then -- Or if just modifying properties
+         sendAction("Color", selectedPart, color)
+    end
+end)
+
+materialDropdownControls = createPropertyInput("Material", propertyFrame, "Dropdown", function(materialName)
+    if selectedPart and selectedPart.Parent and currentTool == "Material" then
+        local materialEnum = Enum.Material[materialName]
+        if materialEnum then
+            sendAction("Material", selectedPart, materialEnum)
+        end
+    elseif selectedPart and selectedPart.Parent then
+         local materialEnum = Enum.Material[materialName]
+        if materialEnum then
+            sendAction("Material", selectedPart, materialEnum)
+        end
+    end
+end)
+local materialNames = {}
+for _, matEnum in ipairs(Enum.Material:GetEnumItems()) do table.insert(materialNames, matEnum.Name) end
+materialDropdownControls.SetOptions(materialNames)
+
+
+anchorButton = createButton("Anchor: N/A", propertyFrame, nil, function()
+    if selectedPart and selectedPart.Parent then
+        local newAnchorState = not selectedPart.Anchored
+        sendAction("Anchored", selectedPart, newAnchorState)
+    end
+end)
+anchorButton.BackgroundColor3 = Color3.fromRGB(60,60,60)
+
+
+-- Handle Part Creation
+local function createNewPart()
+    local hit = Mouse.Hit
+    local position = hit.Position + Vector3.new(0, 2.5, 0) -- Place slightly above clicked point
+    local newPartGUID = HttpService:GenerateGUID(false)
+
+    local creationData = {
+        GUID = newPartGUID,
+        ClassName = "Part",
+        Name = "FE_Part_" .. string.sub(newPartGUID, 1, 4),
+        Size = Vector3.new(4, 1, 2),
+        CFrame = CFrame.new(position),
+        Color = Color3.fromRGB(128, 128, 128),
+        Material = Enum.Material.Plastic,
+        Anchored = true,
+        ParentPath = "Workspace" -- Server will use this to parent the part
+    }
+    sendAction("CreatePart", newPartGUID, creationData) -- Pass GUID as 'part' for CreatePart
+end
+
+-- Mouse Input Handling
+Mouse.Button1Down:Connect(function()
+    if not mainFrame:IsAncestorOf(Mouse.Target) and not (selectionBox and selectionBox.Adornee and selectionBox.Adornee:IsAncestorOf(Mouse.Target)) then -- Ignore clicks on GUI
+        if currentTool == "Create" then
+            createNewPart()
+        elseif currentTool == "Select" or currentTool == "Move" or currentTool == "Resize" or currentTool == "Color" or currentTool == "Material" or currentTool == "Delete" then
+            local target = Mouse.Target
+            if target and target:IsA("BasePart") and target:GetAttribute(TOOL_GUID_ATTRIBUTE) then
+                if currentTool == "Delete" then
+                    sendAction("DeletePart", target, nil)
+                    if selectedPart == target then
+                        selectedPart = nil
+                        updateSelectionBox()
+                        updatePropertyGui()
+                    end
+                else
+                    selectedPart = target
+                    updateSelectionBox()
+                    updatePropertyGui()
+                    if currentTool == "Move" then
+                        isDragging = true
+                        dragOriginCFrame = selectedPart.CFrame
+                        dragMouseOriginHit = Mouse.Hit
+                        dragMode = "XZ" -- Default to XZ plane dragging
+                    end
                 end
-                local s, r = pcall(function() return httprequest({Url = _G.F3X_PEER_SERVER_URL .. "?since=" .. tostring(_G.F3X_LAST_CHECK_TIMESTAMP_ID) .. "&exclude_id=" .. Players.LocalPlayer.UserId, Method = "GET"}) end)
-                if s and r and r.Success and r.Body then
-                    local ds, resObj = pcall(HttpService.JSONDecode, HttpService, r.Body)
-                    if ds and type(resObj)=="table" and type(resObj.edits)=="table" then
-                        for _,eD in ipairs(resObj.edits) do if type(eD)=="table" then _G.ApplyF3XEdit(eD) end end
-                        if resObj.next_since then _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(resObj.next_since)
-                        elseif #resObj.edits > 0 then local lE=resObj.edits[#resObj.edits]; if lE and (lE.timestamp or lE.id) then _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(lE.timestamp or lE.id) else _G.F3X_LAST_CHECK_TIMESTAMP_ID = tostring(os.time()) end end
+            elseif currentTool ~= "Move" then -- Don't deselect if trying to start a move on empty space
+                selectedPart = nil
+                updateSelectionBox()
+                updatePropertyGui()
+            end
+        end
+    end
+end)
+
+Mouse.Move:Connect(function()
+    if isDragging and selectedPart and selectedPart.Parent and currentTool == "Move" then
+        local currentMouseHit = Mouse.Hit
+        local delta
+        if dragMode == "XZ" then
+            delta = Vector3.new(currentMouseHit.X - dragMouseOriginHit.X, 0, currentMouseHit.Z - dragMouseOriginHit.Z)
+        elseif dragMode == "Y" then
+            local yDelta = (Mouse.Y - UserInputService:GetMouseLocation().Y) * -0.1 -- Adjust sensitivity
+            delta = Vector3.new(0, yDelta, 0)
+        end
+        
+        if delta then
+             local newCFrame = dragOriginCFrame + delta
+             sendAction("CFrame", selectedPart, newCFrame)
+        end
+    end
+end)
+
+Mouse.Button1Up:Connect(function()
+    if isDragging then
+        isDragging = false
+        -- Final CFrame update is already sent during Mouse.Move
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if gameProcessedEvent then return end
+    if isDragging and currentTool == "Move" and input.KeyCode == Enum.KeyCode.LeftShift then
+        dragMode = "Y"
+        -- To make Y dragging intuitive, we might need to re-evaluate dragMouseOriginHit based on screen space
+        -- For simplicity, this Y drag will be relative to initial Y drag start.
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if dragMode == "Y" and input.KeyCode == Enum.KeyCode.LeftShift then
+        dragMode = "XZ"
+    end
+end)
+
+
+-- Handle Received Actions from Server
+local function handleRemoteAction(senderPlayer, actionData)
+    if senderPlayer == LocalPlayer then return end -- Ignore actions from self if server echoes them (shouldn't with proper server relay)
+    if type(actionData) ~= "table" then return end
+
+    local guid = actionData.PartGUID
+    local actionType = actionData.ActionType
+    local data = actionData.Data
+
+    -- print("FE_F3X_Client: Received action from "..senderPlayer.Name..":", actionType, "GUID:", guid)
+
+    local targetPart = nil
+    if guid then
+        for _, child in ipairs(workspace:GetDescendants()) do
+            if child:GetAttribute(TOOL_GUID_ATTRIBUTE) == guid then
+                targetPart = child
+                break
+            end
+        end
+    end
+
+    if actionType == "CreatePart" then
+        if targetPart then 
+            -- warn("FE_F3X_Client: Part with GUID "..guid.." already exists. Ignoring create.")
+            return -- Part already created, perhaps due to local prediction or duplicate message
+        end
+        local parent = workspace -- Simplified, assumes workspace. Server could specify parent path.
+        if data.ParentPath then
+            local foundParent = workspace -- Simplified, findPartByPath would be better
+            if data.ParentPath ~= "Workspace" then
+                for _, child in ipairs(workspace:GetDescendants()) do
+                    if child:GetAttribute(TOOL_GUID_ATTRIBUTE) == data.ParentPath then -- if parent is another F3X part
+                        foundParent = child
+                        break
+                    elseif child.Name == data.ParentPath then -- if parent is by name (less reliable)
+                        foundParent = child
+                        break
                     end
                 end
             end
-        end)
-    end
+            parent = foundParent or workspace
+        end
 
-    local f3xS_Suc, f3xS_Con = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/infyiff/backup/refs/heads/main/f3x.lua") end)
-    if not f3xS_Suc or not f3xS_Con then
-        if typeof(notify)=="function" then notify("F3X Error","Could not download f3x.lua: " .. tostring(f3xS_Con)) end; _G.F3X_PEER_SYNC_INITIALIZED=false; return
+        local newPart = Instance.new(data.ClassName or "Part")
+        newPart.Name = data.Name or "FE_Part"
+        newPart:SetAttribute(TOOL_GUID_ATTRIBUTE, guid) -- Crucial: Set the GUID
+        newPart.Size = data.Size or Vector3.new(4,1,2)
+        newPart.CFrame = data.CFrame or CFrame.new()
+        newPart.Color = data.Color or Color3.fromRGB(128,128,128)
+        newPart.Material = data.Material or Enum.Material.Plastic
+        newPart.Anchored = data.Anchored == nil and true or data.Anchored
+        newPart.Parent = parent
+        -- print("FE_F3X_Client: Created remote part with GUID", guid)
+
+    elseif actionType == "DeletePart" then
+        if targetPart and targetPart.Parent then
+            targetPart:Destroy()
+            if selectedPart == targetPart then
+                selectedPart = nil
+                updateSelectionBox()
+                updatePropertyGui()
+            end
+            -- print("FE_F3X_Client: Deleted remote part with GUID", guid)
+        else
+            -- warn("FE_F3X_Client: Could not find part to delete with GUID", guid)
+        end
+    elseif targetPart and targetPart.Parent then -- Existing part operations
+        if actionType == "CFrame" and typeof(data) == "CFrame" then
+            -- Smooth tweening for remote updates
+            TweenService:Create(targetPart, TweenInfo.new(0.1, Enum.EasingStyle.Linear), {CFrame = data}):Play()
+        elseif actionType == "Size" and typeof(data) == "Vector3" then
+            targetPart.Size = data
+        elseif actionType == "Color" and typeof(data) == "Color3" then
+            targetPart.Color = data
+        elseif actionType == "Material" and typeof(data) == "EnumItem" and data:IsA("Material") then
+            targetPart.Material = data
+        elseif actionType == "Anchored" and type(data) == "boolean" then
+            targetPart.Anchored = data
+        end
+        
+        -- If the modified part is currently selected, update property GUI
+        if selectedPart == targetPart then
+            updatePropertyGui()
+        end
+    else
+        if actionType ~= "CreatePart" then -- Don't warn if create part failed to find existing (that's expected)
+            -- warn("FE_F3X_Client: Could not find target part for action", actionType, "GUID:", guid)
+        end
     end
-    
-    --[[
-        CRITICAL USER ACTION REQUIRED:
-        The 'f3x.lua' (f3xS_Con) code MUST BE MANUALLY EDITED by you.
-        You need to find where F3X applies property changes and add:
-           _G.SendF3XEdit(targetPartInstance, "PropertyName", newValue)
-        This script CANNOT do this for you. Without it, peer sync WILL NOT SEND edits.
-    ]]
-    
-    local f3xFunc, f3xLErr = loadstring(f3xS_Con, "f3x.lua_PeersyncContext")
-    if f3xFunc then
-        setfenv(f3xFunc, getfenv()) 
-        local sC, cErr = pcall(f3xFunc)
-        if sC then getgenv().F3XSystemLoaded=true; if typeof(notify)=="function" then notify("F3X","F3X tool GUI system loaded. Remember: Manual f3x.lua modification needed for peer sync to send edits.")end
-        else if typeof(notify)=="function" then notify("F3X Load Error","Error executing f3x.lua: " .. tostring(cErr))end; _G.F3X_PEER_SYNC_INITIALIZED=false end
-    else if typeof(notify)=="function" then notify("F3X Load Error","Error loading f3x.lua string: " .. tostring(f3xLErr))end; _G.F3X_PEER_SYNC_INITIALIZED=false end
 end
 
--- Function to create the F3X Launcher Tool in the player's backpack
-function CreateF3XLauncherTool()
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer then 
-        task.wait(1) -- Wait for player to be available
-        localPlayer = Players.LocalPlayer
-        if not localPlayer then
-             print("Infinite Yield: LocalPlayer not found, cannot create F3X Launcher tool.")
-             return
-        end
-    end
+actionToClientEvent.OnClientEvent:Connect(handleRemoteAction)
 
-    local backpack = localPlayer:FindFirstChildOfClass("Backpack")
-    if not backpack then
-        -- Attempt to wait for backpack if player just joined
-        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
-        if playerGui then
-            backpack = localPlayer:WaitForChild("Backpack", 5)
-        end
-        if not backpack then
-            print("Infinite Yield: Backpack not found. F3X will try to auto-activate directly if this tool fails.")
-            -- Fallback to direct activation if backpack method fails
-            task.delay(2, function()
-                if not getgenv().F3XSystemLoaded then
-                    InitializeAndRunF3XSystem()
-                end
-            end)
-            return
-        end
-    end
+-- Initial GUI update
+updatePropertyGui()
+print("FE F3X Lite Client Loaded. Ensure server script is running for FE features.")
 
-    if backpack:FindFirstChild("F3X Launcher Tool (IY)") then
-        if typeof(notify) == "function" then notify("F3X", "Launcher tool already in inventory. Equip it or use ;f3x.") end
+-- Cleanup
+gui.Destroying:Connect(function()
+    if selectionBox then
+        selectionBox:Destroy()
+    end
+    -- Disconnect any other connections if necessary
+end)
+
+-------------------------------------------------------------------------------------------
+--[[
+    FE_F3X_Server.lua
+    Server-side script for a simplified Filtering Enabled F3X-like building tool.
+    This script should be placed in ServerScriptService.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local ACTION_TO_SERVER_EVENT_NAME = "FE_F3X_ActionToServer"
+local ACTION_TO_CLIENT_EVENT_NAME = "FE_F3X_ActionToClient"
+
+local actionToServerEvent = ReplicatedStorage:FindFirstChild(ACTION_TO_SERVER_EVENT_NAME)
+if not actionToServerEvent then
+    actionToServerEvent = Instance.new("RemoteEvent")
+    actionToServerEvent.Name = ACTION_TO_SERVER_EVENT_NAME
+    actionToServerEvent.Parent = ReplicatedStorage
+    print("FE_F3X_Server: Created ActionToServer RemoteEvent.")
+end
+
+local actionToClientEvent = ReplicatedStorage:FindFirstChild(ACTION_TO_CLIENT_EVENT_NAME)
+if not actionToClientEvent then
+    actionToClientEvent = Instance.new("RemoteEvent")
+    actionToClientEvent.Name = ACTION_TO_CLIENT_EVENT_NAME
+    actionToClientEvent.Parent = ReplicatedStorage
+    print("FE_F3X_Server: Created ActionToClient RemoteEvent.")
+end
+
+actionToServerEvent.OnServerEvent:Connect(function(senderPlayer, actionData)
+    -- Basic validation (optional, but good practice)
+    if type(actionData) ~= "table" or not actionData.ActionType or not actionData.PartGUID then
+        -- warn("FE_F3X_Server: Received invalid actionData from", senderPlayer.Name)
         return
     end
 
-    local launcherTool = Instance.new("Tool")
-    launcherTool.Name = "F3X Launcher Tool (IY)"
-    launcherTool.ToolTip = "Equip this tool to activate the F3X Building GUI System."
-    launcherTool.TextureID = "rbxassetid://1352543873" -- IY Logo as icon
-    launcherTool.RequiresHandle = false 
+    -- print("FE_F3X_Server: Relaying action from", senderPlayer.Name, "-", actionData.ActionType, "GUID:", actionData.PartGUID)
 
-    local activatedAlready = false
-    local equipConnection
-    equipConnection = launcherTool.Equipped:Connect(function()
-        if activatedAlready and getgenv().F3XSystemLoaded then
-             if typeof(notify) == "function" then notify("F3X Launcher", "F3X System is already active.") end
-        else
-            if typeof(notify) == "function" then notify("F3X Launcher", "Activating F3X Building GUI System...") end
-            InitializeAndRunF3XSystem()
-            activatedAlready = true 
+    -- Relay the action to all OTHER clients
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= senderPlayer then
+            pcall(function()
+                actionToClientEvent:FireClient(player, senderPlayer, actionData)
+            end)
         end
-        
-        task.wait(0.2) 
-        if launcherTool.Parent == localPlayer.Character then
-            local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
-            if humanoid then humanoid:UnequipTools() end
-        end
-    end)
-    
-    -- Cleanup connection if tool is removed
-    launcherTool.AncestryChanged:Connect(function(_, parent)
-        if not parent and equipConnection then
-            equipConnection:Disconnect()
-            equipConnection = nil
-        end
-    end)
-
-    launcherTool.Parent = backpack
-    if typeof(notify) == "function" then
-        notify("Infinite Yield", "F3X Launcher tool added to your inventory. Equip it to start the F3X GUI.")
-    else
-        print("Infinite Yield: F3X Launcher tool added to inventory. Equip it to start the F3X GUI.")
     end
-end
-
--- ... (Define all other IY commands as in the original script) ...
-
--- Modify the existing f3x command to use the new initialization function
-addcmd('f3x',{'fex'},function(args, speaker)
-    InitializeAndRunF3XSystem()
 end)
 
--- ... (All other commands and remaining script logic from original) ...
+print("FE F3X Lite Server Script Loaded and Listening.")
 
--- At the very end of the script, after all IY initializations are done:
-task.spawn(function()
-    wait(7) -- Wait for IY GUI and other things to settle
-
-    -- Create the F3X Launcher tool in the player's backpack
-    CreateF3XLauncherTool()
-
-    -- Note: The F3X system itself will now only fully load and start polling
-    -- when the launcher tool is equipped (or if the ;f3x command is used).
-    -- The message about F3XSystemLoaded will appear after equipping the tool.
+Players.PlayerRemoving:Connect(function(playerWhoLeft)
+    -- Optional: Send a "PlayerLeft" or "CleanUpPartsByPlayer" event if parts are tied to player ownership
+    -- For this simple version, parts persist.
+    -- If you wanted to clean up parts created by a player who left:
+    -- local cleanupAction = { ActionType = "PlayerLeftCleanup", PlayerGUID = playerWhoLeft.UserId } -- Or some other identifier
+    -- for _, player in ipairs(Players:GetPlayers()) do
+    --     actionToClientEvent:FireClient(player, playerWhoLeft, cleanupAction)
+    -- end
 end)
+
